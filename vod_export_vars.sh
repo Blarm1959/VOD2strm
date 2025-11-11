@@ -1,8 +1,8 @@
 # === XC / Dispatcharr ? Emby VOD Export Variables ===
 
 # Output directories (use {XC_NAME} placeholder for per-account separation)
-VOD_MOVIES_DIR="/mnt/Share-Media/Dispatcharr/{XC_NAME}/VOD/Movies"
-VOD_SERIES_DIR="/mnt/Share-Media/Dispatcharr/{XC_NAME}/VOD/Series"
+VOD_MOVIES_DIR="/mnt/Share-VOD/{XC_NAME}/Movies"
+VOD_SERIES_DIR="/mnt/Share-VOD/{XC_NAME}/Series"
 
 # If true, delete existing .strm files before regenerating
 VOD_DELETE_OLD=true
