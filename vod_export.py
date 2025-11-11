@@ -465,7 +465,7 @@ def export_movies_for_account(base: str, token: str, account: dict):
             added += 1
 
         pct = (idx * 100) // total_movies
-        if pct >= next_progress_pct:
+        if idx % 250 == 0 or pct >= next_progress_pct:
             log(
                 f"Movies export '{account_name}' progress: {pct}% "
                 f"({idx}/{total_movies} movies processed, {written} .strm written)"
