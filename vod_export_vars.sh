@@ -27,4 +27,4 @@ DISPATCHARR_API_PASS="Cpfc0603!"
 #   "Strong 8K"         -> exactly "Strong 8K"
 #   "UK Line %"         -> anything starting with "UK Line "
 #   "UK %,DE %"         -> multiple patterns
-XC_NAMES="Strong 8K"
+XC_NAMES="%"

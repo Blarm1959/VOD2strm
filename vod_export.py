@@ -49,7 +49,7 @@ DISPATCHARR_API_PASS = VARS.get("DISPATCHARR_API_PASS", "")
 # XC_NAMES pattern filter
 XC_NAMES_RAW = VARS.get("XC_NAMES", "%").strip()
 
-# One-shot full reset
+# One-shot full reset (env overrides file)
 clear_cache_env = os.getenv("VOD_CLEAR_CACHE")
 if clear_cache_env is not None:
     CLEAR_CACHE = clear_cache_env.lower() == "true"
@@ -193,7 +193,6 @@ def get_category(item: dict) -> str:
         v = item.get(key)
         if v:
             return str(v)
-    # Sometimes under custom_properties
     cp = item.get("custom_properties") or {}
     for key in ("category", "category_name", "group_name"):
         v = cp.get(key)
@@ -223,20 +222,41 @@ def api_login(base: str, username: str, password: str) -> str:
 
 
 def api_get(base: str, path: str, token: str, params=None, timeout: int = 60):
+    """
+    Single GET request wrapper with basic logging and timeout.
+    """
     url = f"{base.rstrip('/')}{path}"
     headers = {"Authorization": f"Bearer {token}"} if token else {}
-    resp = requests.get(url, headers=headers, params=params or {}, timeout=timeout)
-    resp.raise_for_status()
+    params = params or {}
+    log(f"API GET {url} params={params} timeout={timeout}s")
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    except requests.exceptions.Timeout:
+        log(f"TIMEOUT calling {url} with params={params} (>{timeout}s)")
+        return None
+    except requests.exceptions.RequestException as e:
+        log(f"ERROR calling {url} with params={params}: {e}")
+        return None
+
+    log(f"API GET {url} -> {resp.status_code}")
+    if not resp.ok:
+        log(f"HTTP {resp.status_code} from {url}: {resp.text[:200]}")
+        return None
+
     if not resp.content:
         return None
-    return resp.json()
+    try:
+        return resp.json()
+    except ValueError:
+        log(f"ERROR: non-JSON response from {url}: {resp.text[:200]}")
+        return None
 
 
-def api_paginate(base: str, path: str, token: str, base_params=None, page_size: int = 100):
+def api_paginate(base: str, path: str, token: str, base_params=None, page_size: int = 100, max_pages: int = 100):
     """
-    Generic paginator for Dispatcharr list endpoints that look like:
-      /api/vod/movies/
+    Generic paginator for Dispatcharr list endpoints:
       /api/vod/series/
+      (we now do movies with a custom streaming loop instead)
     """
     page = 1
     all_rows = []
@@ -244,23 +264,39 @@ def api_paginate(base: str, path: str, token: str, base_params=None, page_size: 
         params = dict(base_params or {})
         params["page"] = page
         params["page_size"] = page_size
-        data = api_get(base, path, token, params=params)
+
+        log(f"Requesting {path} page={page} page_size={page_size} params={params}")
+        data = api_get(base, path, token, params=params, timeout=60)
+
         if data is None:
+            log(f"Stopping pagination on {path}: no data/failed request at page {page}")
             break
+
         if isinstance(data, dict) and "results" in data:
             rows = data.get("results") or []
         else:
             rows = data if isinstance(data, list) else []
+
+        log(f"{path} page={page}: got {len(rows)} row(s)")
         if not rows:
             break
+
         all_rows.extend(rows)
+
+        # more pages?
         if isinstance(data, dict):
             if len(rows) < page_size or not data.get("next"):
                 break
         else:
             if len(rows) < page_size:
                 break
+
         page += 1
+        if page > max_pages:
+            log(f"Reached max_pages={max_pages} for {path}, stopping pagination")
+            break
+
+    log(f"{path} pagination complete: total rows={len(all_rows)}")
     return all_rows
 
 
@@ -308,6 +344,9 @@ def api_get_series_provider_info(base: str, token: str, series_id: int) -> dict:
     return api_get(base, path, token, params=params, timeout=120) or {}
 
 
+# ------------------------------------------------------------
+# Provider-info cache helpers (series episodes)
+# ------------------------------------------------------------
 def get_provider_info_cache_path(account_name: str, series_id: int) -> Path:
     safe_name = safe_account_name(account_name)
     return CACHE_BASE_DIR / safe_name / f"provider_series_{series_id}.json"
@@ -334,6 +373,7 @@ def provider_info_cached(base: str, token: str, account_name: str, series_id: in
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(info, f)
+        log(f"Saved provider-info cache for series_id={series_id} ({account_name}) to {cache_path}")
     except Exception as e:
         log(f"Failed to write provider-info cache for series_id={series_id} ({account_name}): {e}")
 
@@ -393,9 +433,61 @@ def normalize_provider_info(info: dict) -> dict:
 
 
 # ------------------------------------------------------------
-# Export: Movies (API + proxy) per account
+# Movies cache helpers
+# ------------------------------------------------------------
+def get_movies_cache_path(account_name: str) -> Path:
+    """
+    Cache location for movies list per account:
+      /opt/dispatcharr_vod/cache/<safe_account_name>/movies.json
+    """
+    safe_name = safe_account_name(account_name)
+    return CACHE_BASE_DIR / safe_name / "movies.json"
+
+
+def load_movies_cache(account_name: str):
+    """
+    Try to load cached movies list for this account.
+    Return list or None if missing/broken.
+    """
+    cache_path = get_movies_cache_path(account_name)
+    if not cache_path.exists():
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        log(f"Loaded movie cache for '{account_name}' from {cache_path} "
+            f"({len(data)} movies)")
+        return data
+    except Exception as e:
+        log(f"Failed to read movie cache for '{account_name}': {e}")
+        return None
+
+
+def save_movies_cache(account_name: str, movies: list):
+    """
+    Save movies list for this account to cache.
+    """
+    cache_path = get_movies_cache_path(account_name)
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(movies, f)
+        log(f"Saved movie cache for '{account_name}' to {cache_path} "
+            f"({len(movies)} movies)")
+    except Exception as e:
+        log(f"Failed to write movie cache for '{account_name}': {e}")
+
+
+# ------------------------------------------------------------
+# Export: Movies (API + proxy + cache) per account
 # ------------------------------------------------------------
 def export_movies_for_account(base: str, token: str, account: dict):
+    """
+    Movies export per account:
+      - Prefer cached movies list if available and CLEAR_CACHE is false.
+      - Otherwise paginate /api/vod/movies/?m3u_account=<id>, log per-page,
+        write STRMs as we go, and then save cache.
+    """
     account_id = account.get("id")
     account_name = account.get("name") or f"Account-{account_id}"
 
@@ -409,70 +501,199 @@ def export_movies_for_account(base: str, token: str, account: dict):
     mkdir(movies_dir)
     proxy_host = normalize_host_for_proxy(base)
 
-    log(f"Fetching movies from /api/vod/movies/?m3u_account={account_id} ...")
-    movies = api_paginate(
-        base,
-        "/api/vod/movies/",
-        token,
-        base_params={"m3u_account": account_id},
-        page_size=100,
-    )
-    total_movies = len(movies)
-    log(f"Total movies fetched for '{account_name}': {total_movies}")
-
-    if total_movies == 0:
-        log(f"No movies returned from API for '{account_name}'; skipping.")
-        return
-
+    # Metrics / tracking
     expected_files = set()
     added = updated = removed = 0
     written = 0
     next_progress_pct = 10
 
-    for idx, movie in enumerate(movies, start=1):
-        movie_id = movie.get("id")
-        uuid = movie.get("uuid")
-        if not uuid:
-            log(f"[MOVIE {movie_id}] skip: missing uuid")
-            continue
+    # --------------------------------------------------------
+    # 1) Try cache (if not doing a full CLEAR_CACHE run)
+    # --------------------------------------------------------
+    movies = None
+    if not CLEAR_CACHE:
+        movies = load_movies_cache(account_name)
 
-        name = movie.get("name") or movie.get("title") or f"Movie-{movie_id}"
-        year = movie.get("year")
-        category = shorten_component(get_category(movie))
-
-        cleaned_name = clean_title(name) or "Unknown Movie"
-        if year:
-            folder_name = f"{cleaned_name} ({year})"
+    if movies is not None:
+        total_movies = len(movies)
+        if total_movies == 0:
+            log(f"Cached movies list for '{account_name}' is empty; skipping.")
         else:
-            folder_name = cleaned_name
+            log(f"Using cached movies list for '{account_name}': {total_movies} items")
 
-        folder_name = shorten_component(folder_name)
-        folder = movies_dir / category / folder_name
-        mkdir(folder)
+            for idx, movie in enumerate(movies, start=1):
+                movie_id = movie.get("id")
+                uuid = movie.get("uuid")
+                if not uuid:
+                    log(f"[MOVIE {movie_id}] skip (cache): missing uuid")
+                    continue
 
-        filename = f"{folder_name}.strm"
-        strm_file = folder / filename
+                name = movie.get("name") or movie.get("title") or f"Movie-{movie_id}"
+                year = movie.get("year")
+                category = shorten_component(get_category(movie))
 
-        url = f"http://{proxy_host}/proxy/vod/movie/{uuid}"
-        expected_files.add(strm_file)
+                cleaned_name = clean_title(name) or "Unknown Movie"
+                if year:
+                    folder_name = f"{cleaned_name} ({year})"
+                else:
+                    folder_name = cleaned_name
 
-        existed = strm_file.exists()
-        write_strm(strm_file, url)
-        written += 1
-        if existed:
-            updated += 1
-        else:
-            added += 1
+                folder_name = shorten_component(folder_name)
+                folder = movies_dir / category / folder_name
+                mkdir(folder)
 
-        pct = (idx * 100) // total_movies
-        if idx % 250 == 0 or pct >= next_progress_pct:
+                filename = f"{folder_name}.strm"
+                strm_file = folder / filename
+
+                url = f"http://{proxy_host}/proxy/vod/movie/{uuid}"
+                expected_files.add(strm_file)
+
+                existed = strm_file.exists()
+                write_strm(strm_file, url)
+                written += 1
+                if existed:
+                    updated += 1
+                else:
+                    added += 1
+
+                # Progress logging (cached path)
+                pct = (idx * 100) // total_movies
+                if idx % 250 == 0 or pct >= next_progress_pct:
+                    log(
+                        f"Movies export '{account_name}' (cache) progress: {pct}% "
+                        f"({idx}/{total_movies} movies processed, {written} .strm written)"
+                    )
+                    while next_progress_pct <= pct and next_progress_pct < 100:
+                        next_progress_pct += 10
+
+    else:
+        # --------------------------------------------------------
+        # 2) No cache or CLEAR_CACHE: paginate API and stream-write STRMs
+        # --------------------------------------------------------
+        log(f"Fetching movies from /api/vod/movies/?m3u_account={account_id} "
+            f"(no cache, streaming pages)...")
+
+        page = 1
+        page_size = 250  # tweak as you like
+        total_movies = None
+        processed = 0
+        movies_for_cache = []
+
+        while True:
+            params = {"m3u_account": account_id, "page": page, "page_size": page_size}
             log(
-                f"Movies export '{account_name}' progress: {pct}% "
-                f"({idx}/{total_movies} movies processed, {written} .strm written)"
+                f"Requesting /api/vod/movies/ page={page} page_size={page_size} "
+                f"params={params}"
             )
-            while next_progress_pct <= pct and next_progress_pct < 100:
-                next_progress_pct += 10
+            data = api_get(base, "/api/vod/movies/", token, params=params, timeout=120)
 
+            if data is None:
+                log(f"Stopping movies pagination for '{account_name}': "
+                    f"no data/failed request at page {page}")
+                break
+
+            if isinstance(data, dict) and "results" in data:
+                page_movies = data.get("results") or []
+            else:
+                page_movies = data if isinstance(data, list) else []
+
+            if total_movies is None:
+                total_movies = data.get("count") or len(page_movies)
+                log(
+                    f"API reports {total_movies} total movies for '{account_name}' "
+                    f"(page_size={page_size})"
+                )
+
+            log(
+                f"/api/vod/movies/ page={page} for '{account_name}': "
+                f"{len(page_movies)} row(s)"
+            )
+
+            if not page_movies:
+                break
+
+            # Append to cache collector
+            movies_for_cache.extend(page_movies)
+
+            # Process this page immediately (write STRMs)
+            for movie in page_movies:
+                processed += 1
+                movie_id = movie.get("id")
+                uuid = movie.get("uuid")
+                if not uuid:
+                    log(f"[MOVIE {movie_id}] skip: missing uuid")
+                    continue
+
+                name = movie.get("name") or movie.get("title") or f"Movie-{movie_id}"
+                year = movie.get("year")
+                category = shorten_component(get_category(movie))
+
+                cleaned_name = clean_title(name) or "Unknown Movie"
+                if year:
+                    folder_name = f"{cleaned_name} ({year})"
+                else:
+                    folder_name = cleaned_name
+
+                folder_name = shorten_component(folder_name)
+                folder = movies_dir / category / folder_name
+                mkdir(folder)
+
+                filename = f"{folder_name}.strm"
+                strm_file = folder / filename
+
+                url = f"http://{proxy_host}/proxy/vod/movie/{uuid}"
+                expected_files.add(strm_file)
+
+                existed = strm_file.exists()
+                write_strm(strm_file, url)
+                written += 1
+                if existed:
+                    updated += 1
+                else:
+                    added += 1
+
+                # Progress logging while streaming pages
+                if total_movies:
+                    pct = (processed * 100) // total_movies
+                else:
+                    pct = 0
+
+                if processed % 250 == 0 or (total_movies and pct >= next_progress_pct):
+                    log(
+                        f"Movies export '{account_name}' (API) progress: {pct}% "
+                        f"({processed}/{total_movies or 'unknown'} movies processed, "
+                        f"{written} .strm written)"
+                    )
+                    while total_movies and next_progress_pct <= pct and next_progress_pct < 100:
+                        next_progress_pct += 10
+
+            # Decide whether to continue pagination
+            has_next = False
+            if isinstance(data, dict):
+                # Standard DRF pattern: "next" URL
+                if data.get("next"):
+                    has_next = True
+                # Also stop if we got less than a full page
+                if len(page_movies) < page_size:
+                    has_next = False
+            else:
+                if len(page_movies) >= page_size:
+                    has_next = True
+
+            if not has_next:
+                break
+
+            page += 1
+
+        # Save cache if we collected anything
+        if movies_for_cache:
+            save_movies_cache(account_name, movies_for_cache)
+        else:
+            log(f"No movies collected for '{account_name}', nothing to cache.")
+
+    # --------------------------------------------------------
+    # Cleanup: remove stale files & dirs, then summary
+    # --------------------------------------------------------
     if VOD_DELETE_OLD and movies_dir.exists():
         for existing in movies_dir.glob("**/*.strm"):
             if existing not in expected_files:
@@ -518,6 +739,7 @@ def export_series_for_account(base: str, token: str, account: dict):
         token,
         base_params={"m3u_account": account_id},
         page_size=100,
+        max_pages=500,
     )
     total_series = len(series_list)
     log(f"Total series fetched for '{account_name}': {total_series}")
@@ -644,17 +866,11 @@ def export_series_for_account(base: str, token: str, account: dict):
 if __name__ == "__main__":
     log("=== Dispatcharr -> Emby VOD Export (API-only, per-account, proxy URLs) started ===")
     try:
-        movies_root_template = VOD_MOVIES_DIR_TEMPLATE
-        series_root_template = VOD_SERIES_DIR_TEMPLATE
-
         if CLEAR_CACHE:
-            log("VOD_CLEAR_CACHE=true: clearing cache and output folders before export")
-
+            log("VOD_CLEAR_CACHE=true: clearing cache dir before export")
             if CACHE_BASE_DIR.exists():
                 shutil.rmtree(CACHE_BASE_DIR, ignore_errors=True)
                 log(f"Cleared cache dir: {CACHE_BASE_DIR}")
-
-            # We clear per-account roots inside the account loop below
 
         # Login once to Dispatcharr API
         token = api_login(DISPATCHARR_BASE_URL, DISPATCHARR_API_USER, DISPATCHARR_API_PASS)
@@ -667,11 +883,11 @@ if __name__ == "__main__":
             account_name = acc.get("name") or f"Account-{acc.get('id')}"
             safe_name = safe_account_name(account_name)
 
-            movies_dir = Path(movies_root_template.replace("{XC_NAME}", account_name))
-            series_dir = Path(series_root_template.replace("{XC_NAME}", account_name))
+            movies_dir = Path(VOD_MOVIES_DIR_TEMPLATE.replace("{XC_NAME}", account_name))
+            series_dir = Path(VOD_SERIES_DIR_TEMPLATE.replace("{XC_NAME}", account_name))
 
             if CLEAR_CACHE:
-                # Clear cache for this account
+                # Clear account-specific cache
                 acc_cache_dir = CACHE_BASE_DIR / safe_name
                 if acc_cache_dir.exists():
                     shutil.rmtree(acc_cache_dir, ignore_errors=True)
