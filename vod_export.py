@@ -176,15 +176,25 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
     """
     Generic pagination helper for Dispatcharr list endpoints.
     Yields pages (list of items). Also logs progress if `count` is present.
+
+    NOTE:
+      - `path` may already include query parameters, e.g.
+        "/api/vod/movies/?m3u_account=2"
+      - We append page/page_size using "?" or "&" appropriately.
     """
     page = 1
     total = None
     seen = 0
+
     while True:
-        full_path = f"{path}?page={page}&page_size={page_size}"
+        # Choose separator depending on whether path already has a "?"
+        sep = "&" if "?" in path else "?"
+        full_path = f"{path}{sep}page={page}&page_size={page_size}"
+
         data = api_get(base_url, token, full_path)
         if data is None:
             break
+
         if isinstance(data, dict):
             results = data.get("results") or data.get("data") or data.get("items") or []
             if total is None:
@@ -214,6 +224,7 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
         else:
             if len(results) < page_size:
                 break
+
         page += 1
 
 
