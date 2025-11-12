@@ -1,63 +1,117 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Dispatcharr VOD Exporter configuration
+# This file is sourced by vod_export.py (not executed as a shell script)
 
-# Where to put STRMs
-# {XC_NAME} will be replaced with the Dispatcharr/M3U account name
+########################################
+# Core paths
+########################################
+
+# Base output directories (per XC account)
+# {XC_NAME} is replaced with the Dispatcharr M3U/XC account name
 VOD_MOVIES_DIR="/mnt/Share-VOD/{XC_NAME}/Movies"
 VOD_SERIES_DIR="/mnt/Share-VOD/{XC_NAME}/Series"
 
-# Log file
+# Where to store logs
 VOD_LOG_FILE="/opt/dispatcharr_vod/vod_export.log"
 
-# Cleanup behaviour
-# If true, remove any .strm files that no longer correspond to current API data
-VOD_DELETE_OLD="true"
+# Where to store caches (movies/series lists, provider-info, TMDB JSON/images)
+VOD_CACHE_DIR="/opt/dispatcharr_vod/cache"
 
-# Full reset mode:
-# - If true in this file OR env VOD_CLEAR_CACHE=true, cache + output dirs are wiped before export
-VOD_CLEAR_CACHE="false"
+########################################
+# Dispatcharr API
+########################################
 
-# Dispatcharr API connection
+# URL to your Dispatcharr instance (inside the Dispatcharr container, usually localhost)
 DISPATCHARR_BASE_URL="http://127.0.0.1:9191"
+
+# Dispatcharr admin / API user credentials
 DISPATCHARR_API_USER="admin"
 DISPATCHARR_API_PASS="Cpfc0603!"
 
-# XC_NAMES: which M3U/XC accounts to export (matches Dispatcharr account "name")
-# Use shell-style globs (fnmatch): '*' = wildcard, '?' = single char, comma-separated
-#   "*"                  -> all accounts
-#   "Strong 8K"          -> exactly "Strong 8K"
-#   "UK Line *"          -> anything starting with "UK Line "
-#   "UK *,DE *"          -> multiple patterns
+# HTTP User-Agent for outbound API calls (Dispatcharr + TMDB)
+HTTP_USER_AGENT="DispatcharrEmbyVOD/1.0"
+
+########################################
+# XC account filter (XC_NAMES)
+########################################
+
+# Comma-separated list of glob patterns to match Dispatcharr M3U/XC account names.
+# Wildcards:
+#   *  matches any sequence of characters
+#   ?  matches a single character
+#
+# Examples:
+#   XC_NAMES="Strong 8K"
+#   XC_NAMES="UK *"
+#   XC_NAMES="UK *,Movies*,Strong 8K"
+#   XC_NAMES="*"          # all accounts
 XC_NAMES="*"
 
-# Feature toggles
+########################################
+# Export toggles
+########################################
+
+# Toggle movies/series exports independently
 VOD_EXPORT_MOVIES="true"
 VOD_EXPORT_SERIES="true"
 
-# -------- Optional NFO + TMDB metadata --------
-# Enable writing NFO files (movies, tvshow, episodes)
+########################################
+# NFO / TMDB metadata
+########################################
+
+# Enable NFO generation (movie.nfo, tvshow.nfo, episode .nfo)
 ENABLE_NFO="true"
-# When false, existing NFOs are kept; when true, we overwrite them.
+
+# Overwrite existing NFO files?
 VOD_OVERWRITE_NFO="false"
 
-# TMDB (recommended). If empty, NFOs will be written with whatever metadata we have
-# from Dispatcharr/provider-info (title/year/plot/etc.) and skip TMDB lookups.
+# TMDB API key (optional but strongly recommended for better metadata & artwork)
 TMDB_API_KEY=""
 
-# Preferred metadata language (TMDB)
+# Language for TMDB metadata (e.g. en-US, en-GB, fr-FR)
 NFO_LANG="en-US"
 
-# Write NFO types (all true is safe for Emby)
-NFO_WRITE_MOVIE="true"
-NFO_WRITE_TVSHOW="true"
-NFO_WRITE_EPISODE="true"
+# TMDB throttle in seconds between API calls (be polite to TMDB)
+TMDB_THROTTLE_SEC="0.30"
 
-# -------- Optional artwork (TMDB images) --------
-# Enable image fetching (poster/fanart for movie & tvshow, still for episode)
+########################################
+# Image / artwork settings
+########################################
+
+# Enable poster/fanart/episode-thumb downloads
 ENABLE_IMAGES="true"
-# When false, keep existing poster.jpg/fanart.jpg/thumb.jpg; when true, overwrite.
+
+# Overwrite existing images?
 VOD_OVERWRITE_IMAGES="false"
 
-# TMDB image sizes (pick from: original, w500, w780, w300, etc.)
+# TMDB image sizes (see TMDB configuration for valid options)
 TMDB_IMAGE_SIZE_POSTER="w500"
 TMDB_IMAGE_SIZE_BACKDROP="w780"
 TMDB_IMAGE_SIZE_STILL="w300"
+
+########################################
+# Cleanup / cache behaviour
+########################################
+
+# Remove .strm files that no longer correspond to any active movie/episode
+VOD_DELETE_OLD="true"
+
+# One-shot full reset:
+#   - clears caches under VOD_CACHE_DIR
+#   - removes Movies/Series export directories per account
+# Can be overridden per-run using env: VOD_CLEAR_CACHE=true ./vod_export.py
+VOD_CLEAR_CACHE="false"
+
+########################################
+# Dry-run mode
+########################################
+
+# When true:
+#   - No directories are created
+#   - No .strm/.nfo/images are written
+#   - No caches are saved or cleared
+#   - No stale .strm files or empty directories are removed
+#   - All filesystem actions are logged as "[dry-run] Would ..."
+#
+# Can be overridden per-run using env: VOD_DRY_RUN=true ./vod_export.py
+VOD_DRY_RUN="false"
