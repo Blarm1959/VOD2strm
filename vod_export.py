@@ -299,13 +299,33 @@ def normalize_host_for_proxy(base: str) -> str:
 # Dispatcharr API: XC Accounts
 # ------------------------------------------------------------
 def get_xc_accounts(base: str, token: str) -> list[dict]:
-    data = api_get(base, token, "/api/accounts/m3u/")
+    """
+    Return the list of M3U/XC accounts from Dispatcharr.
+
+    Swagger path:
+      /api/m3u/accounts/
+
+    Response shape is a simple array of M3UAccount objects:
+      [
+        {
+          "id": 2,
+          "name": "Strong 8K",
+          "server_url": "http://cf.hi-max.me",
+          ...
+        },
+        ...
+      ]
+    """
+    data = api_get(base, token, "/api/m3u/accounts/")
     if not data:
         return []
+    # /api/m3u/accounts/ returns a plain list, not a paginated dict
+    if isinstance(data, list):
+        return data
     if isinstance(data, dict):
-        results = data.get("results") or data.get("data") or data.get("items") or []
-        return results
-    return data
+        # Just in case of future API changes
+        return data.get("results") or data.get("data") or data.get("items") or []
+    return []
 
 
 # ------------------------------------------------------------
