@@ -22,12 +22,12 @@ DISPATCHARR_API_USER="admin"
 DISPATCHARR_API_PASS="Cpfc0603!"
 
 # XC_NAMES: which M3U/XC accounts to export (matches Dispatcharr account "name")
-# Use SQL-like patterns with % as wildcard, comma-separated:
-#   "%"                 -> all accounts
-#   "Strong 8K"         -> exactly "Strong 8K"
-#   "UK Line %"         -> anything starting with "UK Line "
-#   "UK %,DE %"         -> multiple patterns
-XC_NAMES="%"
+# Use shell-style globs (fnmatch): '*' = wildcard, '?' = single char, comma-separated
+#   "*"                  -> all accounts
+#   "Strong 8K"          -> exactly "Strong 8K"
+#   "UK Line *"          -> anything starting with "UK Line "
+#   "UK *,DE *"          -> multiple patterns
+XC_NAMES="*"
 
 # Feature toggles
 VOD_EXPORT_MOVIES="true"
@@ -50,3 +50,14 @@ NFO_LANG="en-US"
 NFO_WRITE_MOVIE="true"
 NFO_WRITE_TVSHOW="true"
 NFO_WRITE_EPISODE="true"
+
+# -------- Optional artwork (TMDB images) --------
+# Enable image fetching (poster/fanart for movie & tvshow, still for episode)
+ENABLE_IMAGES="true"
+# When false, keep existing poster.jpg/fanart.jpg/thumb.jpg; when true, overwrite.
+VOD_OVERWRITE_IMAGES="false"
+
+# TMDB image sizes (pick from: original, w500, w780, w300, etc.)
+TMDB_IMAGE_SIZE_POSTER="w500"
+TMDB_IMAGE_SIZE_BACKDROP="w780"
+TMDB_IMAGE_SIZE_STILL="w300"

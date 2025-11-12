@@ -47,8 +47,8 @@ DISPATCHARR_BASE_URL = VARS.get("DISPATCHARR_BASE_URL", "http://127.0.0.1:9191")
 DISPATCHARR_API_USER = VARS.get("DISPATCHARR_API_USER", "admin")
 DISPATCHARR_API_PASS = VARS.get("DISPATCHARR_API_PASS", "")
 
-# XC_NAMES pattern filter
-XC_NAMES_RAW = VARS.get("XC_NAMES", "%").strip()
+# XC_NAMES pattern filter (shell-style globs using * and ?, comma-separated)
+XC_NAMES_RAW = VARS.get("XC_NAMES", "*").strip()
 
 # Toggles
 EXPORT_MOVIES = VARS.get("VOD_EXPORT_MOVIES", "true").lower() == "true"
@@ -69,6 +69,13 @@ NFO_LANG = VARS.get("NFO_LANG", "en-US")
 NFO_WRITE_MOVIE = VARS.get("NFO_WRITE_MOVIE", "true").lower() == "true"
 NFO_WRITE_TVSHOW = VARS.get("NFO_WRITE_TVSHOW", "true").lower() == "true"
 NFO_WRITE_EPISODE = VARS.get("NFO_WRITE_EPISODE", "true").lower() == "true"
+
+# Images
+ENABLE_IMAGES = VARS.get("ENABLE_IMAGES", "false").lower() == "true"
+OVERWRITE_IMAGES = VARS.get("VOD_OVERWRITE_IMAGES", "false").lower() == "true"
+TMDB_IMAGE_SIZE_POSTER = VARS.get("TMDB_IMAGE_SIZE_POSTER", "w500")
+TMDB_IMAGE_SIZE_BACKDROP = VARS.get("TMDB_IMAGE_SIZE_BACKDROP", "w780")
+TMDB_IMAGE_SIZE_STILL = VARS.get("TMDB_IMAGE_SIZE_STILL", "w300")
 
 MAX_COMPONENT_LEN = 80
 CACHE_BASE_DIR = Path("/opt/dispatcharr_vod/cache")
@@ -94,9 +101,9 @@ def log(msg: str) -> None:
 # ------------------------------------------------------------
 def parse_xc_patterns(raw: str):
     if not raw:
-        return ["%"]
+        return ["*"]
     parts = [p.strip() for p in raw.split(",") if p.strip()]
-    return parts or ["%"]
+    return parts or ["*"]
 
 
 XC_PATTERNS = parse_xc_patterns(XC_NAMES_RAW)
@@ -105,11 +112,11 @@ XC_PATTERNS = parse_xc_patterns(XC_NAMES_RAW)
 def match_account_name(name: str, patterns) -> bool:
     if not patterns:
         return True
-    if "%" in patterns:
+    if "*" in patterns:
         return True
     for pat in patterns:
-        glob = pat.replace("%", "*").replace("_", "?")
-        if fnmatch.fnmatchcase(name, glob):
+        # pat already uses * and ?; fnmatchcase handles it
+        if fnmatch.fnmatchcase(name, pat):
             return True
     return False
 
@@ -186,6 +193,13 @@ def get_category(item: dict) -> str:
         if v:
             return str(v)
     return "Uncategorized"
+
+
+def parse_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
 
 
 # ------------------------------------------------------------
@@ -283,8 +297,8 @@ def get_xc_accounts(base: str, token: str):
         if match_account_name(name, patterns):
             selected.append(acc)
     if not selected:
-        raise RuntimeError(f"No M3U accounts matched XC_NAMES={patterns or ['%']}")
-    log(f"Found {len(selected)} M3U/XC account(s) matching patterns: {patterns or ['%']}")
+        raise RuntimeError(f"No M3U accounts matched XC_NAMES={patterns or ['*']}")
+    log(f"Found {len(selected)} M3U/XC account(s) matching patterns: {patterns or ['*']}")
     for acc in selected:
         log(f" - {acc.get('name')} (id={acc.get('id')}, server_url={acc.get('server_url')})")
     return selected
@@ -339,23 +353,14 @@ def normalize_provider_info(info: dict) -> dict:
     for ep in raw_eps:
         if not isinstance(ep, dict):
             continue
-        season_val = ep.get("season_number") or ep.get("season") or ep.get("season_num") or 0
-        try:
-            season_int = int(season_val)
-        except Exception:
-            season_int = 0
-        season_key = str(season_int)
-        ep_num_val = ep.get("episode_number") or ep.get("episode_num") or 0
-        try:
-            ep_num_int = int(ep_num_val)
-        except Exception:
-            ep_num_int = 0
+        season_int = parse_int(ep.get("season_number") or ep.get("season") or ep.get("season_num"), 0)
+        ep_num_int = parse_int(ep.get("episode_number") or ep.get("episode_num"), 0)
         title = ep.get("title") or ep.get("name") or f"Episode {ep_num_int}"
         norm_ep = dict(ep)
         norm_ep["season_number"] = season_int
         norm_ep["episode_number"] = ep_num_int
         norm_ep["title"] = title
-        episodes_by_season.setdefault(season_key, []).append(norm_ep)
+        episodes_by_season.setdefault(str(season_int), []).append(norm_ep)
     for key, eps in episodes_by_season.items():
         eps.sort(key=lambda e: e.get("episode_number") or 0)
     return {"episodes": episodes_by_season}
@@ -428,9 +433,14 @@ def save_series_cache(account_name: str, series_list: list):
 # TMDB helpers (optional)
 # ------------------------------------------------------------
 def tmdb_cache_path(kind: str, key: str) -> Path:
-    # kind: "movie", "tv", "episode-<tv_id>-<s>-<e>"
+    # kind: "movie", "tv", "episode", "img"
     safe_key = re.sub(r"[^0-9A-Za-z_.-]", "_", key)
     return TMDB_CACHE_DIR / kind / f"{safe_key}.json"
+
+
+def tmdb_img_cache_path(path_fragment: str) -> Path:
+    safe_key = re.sub(r"[^0-9A-Za-z_.-/]", "_", path_fragment).lstrip("_")
+    return TMDB_CACHE_DIR / "img" / safe_key.strip("/")
 
 
 def tmdb_get_json(url: str, params: dict) -> dict | None:
@@ -464,6 +474,29 @@ def tmdb_get_movie(tmdb_id: str) -> dict | None:
     return data
 
 
+def tmdb_search_movie(title: str, year: int | None) -> dict | None:
+    """Fallback: search TMDB by title/year and pick best match by year, else first."""
+    if not TMDB_API_KEY or not title:
+        return None
+    url = "https://api.themoviedb.org/3/search/movie"
+    params = {"query": title, "language": NFO_LANG, "include_adult": "false"}
+    if year:
+        params["year"] = year
+    data = tmdb_get_json(url, params) or {}
+    results = data.get("results") or []
+    if not results:
+        return None
+    if year:
+        for r in results:
+            y = 0
+            rd = r.get("release_date") or ""
+            if rd[:4].isdigit():
+                y = int(rd[:4])
+            if y == year:
+                return tmdb_get_movie(str(r.get("id")))
+    return tmdb_get_movie(str(results[0].get("id")))
+
+
 def tmdb_get_tv(tmdb_id: str) -> dict | None:
     cache = tmdb_cache_path("tv", tmdb_id)
     if cache.exists():
@@ -477,6 +510,29 @@ def tmdb_get_tv(tmdb_id: str) -> dict | None:
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(data), encoding="utf-8")
     return data
+
+
+def tmdb_search_tv(title: str, year: int | None) -> dict | None:
+    """Fallback: search TMDB TV by name/year."""
+    if not TMDB_API_KEY or not title:
+        return None
+    url = "https://api.themoviedb.org/3/search/tv"
+    params = {"query": title, "language": NFO_LANG, "include_adult": "false"}
+    if year:
+        params["first_air_date_year"] = year
+    data = tmdb_get_json(url, params) or {}
+    results = data.get("results") or []
+    if not results:
+        return None
+    if year:
+        for r in results:
+            y = 0
+            fd = r.get("first_air_date") or ""
+            if fd[:4].isdigit():
+                y = int(fd[:4])
+            if y == year:
+                return tmdb_get_tv(str(r.get("id")))
+    return tmdb_get_tv(str(results[0].get("id")))
 
 
 def tmdb_get_tv_episode(tv_tmdb_id: str, season: int, episode: int) -> dict | None:
@@ -493,6 +549,36 @@ def tmdb_get_tv_episode(tv_tmdb_id: str, season: int, episode: int) -> dict | No
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps(data), encoding="utf-8")
     return data
+
+
+def tmdb_download_image(path_fragment: str, size: str, dest_path: Path) -> bool:
+    """Download TMDB image (poster/backdrop/still) to dest_path, cached."""
+    if not TMDB_API_KEY or not path_fragment:
+        return False
+    cache_file = tmdb_img_cache_path(f"{size}{path_fragment}")
+    if cache_file.exists():
+        # copy from cache to destination
+        mkdir(dest_path.parent)
+        shutil.copy2(cache_file, dest_path)
+        return True
+    base = "https://image.tmdb.org/t/p"
+    url = f"{base}/{size}{path_fragment}"
+    try:
+        time.sleep(TMDB_THROTTLE_SEC)
+        r = requests.get(url, timeout=30, stream=True)
+        if r.status_code == 200:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "wb") as f:
+                for chunk in r.iter_content(8192):
+                    f.write(chunk)
+            mkdir(dest_path.parent)
+            shutil.copy2(cache_file, dest_path)
+            return True
+        else:
+            log(f"TMDB image {url} -> {r.status_code}")
+    except requests.RequestException as e:
+        log(f"TMDB image error {url}: {e}")
+    return False
 
 
 # ------------------------------------------------------------
@@ -516,7 +602,7 @@ def build_movie_nfo(movie_item: dict, tmdb: dict | None) -> str:
     rating = (tmdb or {}).get("vote_average")
     votes = (tmdb or {}).get("vote_count")
     imdb_id = movie_item.get("imdb_id") or (tmdb or {}).get("imdb_id")
-    tmdb_id = movie_item.get("tmdb_id")
+    tmdb_id = movie_item.get("tmdb_id") or (tmdb or {}).get("id")
 
     body = []
     body.append(f"<title>{xml_escape(title)}</title>")
@@ -542,7 +628,7 @@ def build_tvshow_nfo(series_item: dict, tmdb: dict | None) -> str:
     rating = (tmdb or {}).get("vote_average")
     votes = (tmdb or {}).get("vote_count")
     imdb_id = series_item.get("imdb_id") or (tmdb or {}).get("external_ids", {}).get("imdb_id")
-    tmdb_id = series_item.get("tmdb_id")
+    tmdb_id = series_item.get("tmdb_id") or (tmdb or {}).get("id")
 
     body = []
     body.append(f"<title>{xml_escape(title)}</title>")
@@ -583,7 +669,7 @@ def build_episode_nfo(ep_item: dict, tmdb_ep: dict | None) -> str:
 
 
 # ------------------------------------------------------------
-# Export: Movies (API + proxy + cache + NFO) per account
+# Export: Movies (API + proxy + cache + NFO + images) per account
 # ------------------------------------------------------------
 def export_movies_for_account(base: str, token: str, account: dict):
     if not EXPORT_MOVIES:
@@ -616,7 +702,7 @@ def export_movies_for_account(base: str, token: str, account: dict):
             log(f"[MOVIE {movie_id}] skip: missing uuid")
             return
         name = movie.get("name") or movie.get("title") or f"Movie-{movie_id}"
-        year = movie.get("year")
+        year = parse_int(movie.get("year"), None)
         category = shorten_component(get_category(movie))
         cleaned_name = clean_title(name) or "Unknown Movie"
         folder_name = f"{cleaned_name} ({year})" if year else cleaned_name
@@ -635,16 +721,34 @@ def export_movies_for_account(base: str, token: str, account: dict):
         else:
             added += 1
 
-        # NFO (movie)
+        # NFO (movie) + images with TMDB fallback
+        tmdb_data = None
+        if ENABLE_NFO or ENABLE_IMAGES:
+            tmdb_id = movie.get("tmdb_id")
+            if TMDB_API_KEY:
+                if tmdb_id:
+                    tmdb_data = tmdb_get_movie(str(tmdb_id))
+                if not tmdb_data:
+                    tmdb_data = tmdb_search_movie(cleaned_name, year)
+
         if ENABLE_NFO and NFO_WRITE_MOVIE:
             nfo_path = strm_file.with_suffix(".nfo")
             if OVERWRITE_NFO or not Path(nfo_path).exists():
-                tmdb_data = None
-                tmdb_id = movie.get("tmdb_id")
-                if TMDB_API_KEY and tmdb_id:
-                    tmdb_data = tmdb_get_movie(str(tmdb_id))
-                nfo_xml = build_movie_nfo(movie, tmdb_data)
+                nfo_xml = build_movie_nfo(
+                    {**movie, "tmdb_id": (movie.get("tmdb_id") or (tmdb_data or {}).get("id"))},
+                    tmdb_data,
+                )
                 write_text_atomic(Path(nfo_path), nfo_xml)
+
+        if ENABLE_IMAGES and tmdb_data:
+            poster_path = tmdb_data.get("poster_path")
+            backdrop_path = tmdb_data.get("backdrop_path")
+            poster_dest = folder / "poster.jpg"
+            fanart_dest = folder / "fanart.jpg"
+            if poster_path and (OVERWRITE_IMAGES or not poster_dest.exists()):
+                tmdb_download_image(poster_path, TMDB_IMAGE_SIZE_POSTER, poster_dest)
+            if backdrop_path and (OVERWRITE_IMAGES or not fanart_dest.exists()):
+                tmdb_download_image(backdrop_path, TMDB_IMAGE_SIZE_BACKDROP, fanart_dest)
 
     if movies is not None:
         total_movies = len(movies)
@@ -734,7 +838,7 @@ def export_movies_for_account(base: str, token: str, account: dict):
 
 
 # ------------------------------------------------------------
-# Export: Series (API + provider-info + proxy + series-list cache + NFO) per account
+# Export: Series (API + provider-info + proxy + series-list cache + NFO + images) per account
 # ------------------------------------------------------------
 def export_series_for_account(base: str, token: str, account: dict):
     if not EXPORT_SERIES:
@@ -750,6 +854,7 @@ def export_series_for_account(base: str, token: str, account: dict):
     mkdir(series_dir)
     proxy_host = normalize_host_for_proxy(base)
 
+    # Series list (cache or API)
     series_list = None
     if not CLEAR_CACHE:
         series_list = load_series_cache(account_name)
@@ -780,7 +885,7 @@ def export_series_for_account(base: str, token: str, account: dict):
     for s in series_list:
         series_id = s.get("id")
         series_name = s.get("name") or f"Series-{series_id}"
-        year = s.get("year")
+        year = parse_int(s.get("year"), None)
         category = shorten_component(get_category(s))
         cleaned_name = clean_title(series_name) or "Unknown Series"
         series_folder_name = f"{cleaned_name} ({year})" if year else cleaned_name
@@ -788,19 +893,38 @@ def export_series_for_account(base: str, token: str, account: dict):
         series_folder = series_dir / category / series_folder_name
         mkdir(series_folder)
 
+        # TMDB tv (with fallback search)
+        tmdb_tv = None
+        if ENABLE_NFO or ENABLE_IMAGES:
+            tmdb_id = s.get("tmdb_id")
+            if TMDB_API_KEY:
+                if tmdb_id:
+                    tmdb_tv = tmdb_get_tv(str(tmdb_id))
+                if not tmdb_tv:
+                    tmdb_tv = tmdb_search_tv(cleaned_name, year)
+
         # tvshow.nfo (series level)
         if ENABLE_NFO and NFO_WRITE_TVSHOW:
             tvshow_nfo = series_folder / "tvshow.nfo"
             if OVERWRITE_NFO or not tvshow_nfo.exists():
-                tmdb_data = None
-                tmdb_id = s.get("tmdb_id")
-                if TMDB_API_KEY and tmdb_id:
-                    # tv endpoint; enrich with external_ids if possible
-                    tmdb_data = tmdb_get_tv(str(tmdb_id)) or {}
-                    # Optionally call /external_ids (not essential)
-                nfo_xml = build_tvshow_nfo(s, tmdb_data)
+                nfo_xml = build_tvshow_nfo(
+                    {**s, "tmdb_id": (s.get("tmdb_id") or (tmdb_tv or {}).get("id"))},
+                    tmdb_tv,
+                )
                 write_text_atomic(tvshow_nfo, nfo_xml)
 
+        # tv posters / fanart
+        if ENABLE_IMAGES and tmdb_tv:
+            poster_path = tmdb_tv.get("poster_path")
+            backdrop_path = tmdb_tv.get("backdrop_path")
+            poster_dest = series_folder / "poster.jpg"
+            fanart_dest = series_folder / "fanart.jpg"
+            if poster_path and (OVERWRITE_IMAGES or not poster_dest.exists()):
+                tmdb_download_image(poster_path, TMDB_IMAGE_SIZE_POSTER, poster_dest)
+            if backdrop_path and (OVERWRITE_IMAGES or not fanart_dest.exists()):
+                tmdb_download_image(backdrop_path, TMDB_IMAGE_SIZE_BACKDROP, fanart_dest)
+
+        # Episodes
         info = provider_info_cached(base, token, account_name, series_id)
         data = normalize_provider_info(info)
         episodes_by_season = data.get("episodes") or {}
@@ -818,15 +942,10 @@ def export_series_for_account(base: str, token: str, account: dict):
                     next_progress_pct += 10
             continue
 
-        # If available, TMDB tv_id for episodes
-        series_tmdb_id = s.get("tmdb_id")
+        series_tmdb_id = (tmdb_tv or {}).get("id") or s.get("tmdb_id")
 
         for season_key, eps in episodes_by_season.items():
-            try:
-                season = int(re.sub(r"\D", "", str(season_key)) or "0")
-            except Exception:
-                season = 0
-
+            season = parse_int(re.sub(r"\D", "", str(season_key)) or "0", 0)
             season_label = f"Season {season:02d}" if season else "Season 00"
             season_folder = series_folder / season_label
             mkdir(season_folder)
@@ -836,16 +955,12 @@ def export_series_for_account(base: str, token: str, account: dict):
                 if not ep_uuid:
                     continue
 
-                ep_num = ep.get("episode_number") or ep.get("episode_num") or 0
-                try:
-                    ep_num = int(ep_num)
-                except Exception:
-                    ep_num = 0
-
+                ep_num = parse_int(ep.get("episode_number") or ep.get("episode_num"), 0)
                 raw_ep_title = ep.get("title") or ep.get("name") or f"Episode {ep_num}"
                 ep_title = shorten_component(clean_title(raw_ep_title))
                 code = f"S{season:02d}E{ep_num:02d}" if ep_num else f"S{season:02d}"
                 filename_base = shorten_component(f"{code} - {ep_title}")
+
                 strm_file = season_folder / f"{filename_base}.strm"
                 url = f"http://{proxy_host}/proxy/vod/episode/{ep_uuid}"
                 expected_files.add(strm_file)
@@ -858,15 +973,25 @@ def export_series_for_account(base: str, token: str, account: dict):
                 else:
                     added_eps += 1
 
-                # Episode NFO
+                # Episode NFO + still
+                tmdb_ep = None
+                if (ENABLE_NFO or ENABLE_IMAGES) and TMDB_API_KEY and series_tmdb_id and season > 0 and ep_num > 0:
+                    tmdb_ep = tmdb_get_tv_episode(str(series_tmdb_id), season, ep_num)
+
                 if ENABLE_NFO and NFO_WRITE_EPISODE:
                     ep_nfo_path = strm_file.with_suffix(".nfo")
                     if OVERWRITE_NFO or not ep_nfo_path.exists():
-                        tmdb_ep = None
-                        if TMDB_API_KEY and series_tmdb_id and season > 0 and ep_num > 0:
-                            tmdb_ep = tmdb_get_tv_episode(str(series_tmdb_id), season, ep_num)
-                        nfo_xml = build_episode_nfo(ep, tmdb_ep)
+                        nfo_xml = build_episode_nfo(
+                            {"season_number": season, "episode_number": ep_num, "title": raw_ep_title},
+                            tmdb_ep,
+                        )
                         write_text_atomic(ep_nfo_path, nfo_xml)
+
+                if ENABLE_IMAGES and tmdb_ep:
+                    still_path = tmdb_ep.get("still_path")
+                    thumb_dest = season_folder / f"{filename_base}.thumb.jpg"
+                    if still_path and (OVERWRITE_IMAGES or not thumb_dest.exists()):
+                        tmdb_download_image(still_path, TMDB_IMAGE_SIZE_STILL, thumb_dest)
 
         pct = (series_processed * 100) // total_series
         if pct >= next_progress_pct:
