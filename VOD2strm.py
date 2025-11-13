@@ -1189,6 +1189,9 @@ def export_series_for_account(base: str, token: str, account: dict):
         f"{removed_eps} removed, {active_eps} active."
     )
 
+active_eps} active."
+    )
+
 
 # ------------------------------------------------------------
 # Main
