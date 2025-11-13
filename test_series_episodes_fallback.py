@@ -3,7 +3,7 @@
 
 import json
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import requests
 
@@ -35,31 +35,75 @@ def login_dispatcharr() -> str:
     return token
 
 
-def api_get_json(url: str, token: Optional[str] = None) -> Dict[str, Any]:
-    headers = {}
+def api_get_json(url: str, token: Optional[str] = None) -> Union[Dict[str, Any], List[Any]]:
+    """
+    Wrapper around GET that returns JSON plus status info.
+
+    - On HTTP != 200 or JSON decode failure, returns a dict:
+        { "__status_code": <int>, "__text": <raw_body> }
+
+    - On success and JSON is a dict, injects __status_code into that dict.
+
+    - On success and JSON is a list, wraps it in:
+        { "__status_code": <int>, "__list": <the_list> }
+
+      so callers can still get status without trying to treat a list as a dict.
+    """
+    headers: Dict[str, str] = {}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     r = requests.get(url, headers=headers, timeout=60)
-    # Let caller inspect status for 500 handling
+
+    # Non-200: do not attempt to parse JSON
     if r.status_code != 200:
         return {"__status_code": r.status_code, "__text": r.text}
+
+    # Try to parse JSON
     try:
         data = r.json()
     except Exception:
         return {"__status_code": r.status_code, "__text": r.text}
-    data["__status_code"] = r.status_code
-    return data
+
+    # If it's a list, wrap so we can attach status code safely
+    if isinstance(data, list):
+        return {"__status_code": r.status_code, "__list": data}
+
+    # Otherwise assume dict-like and inject status
+    if isinstance(data, dict):
+        data["__status_code"] = r.status_code
+        return data
+
+    # Fallback: unknown JSON shape, wrap it
+    return {"__status_code": r.status_code, "__data": data}
 
 
 def get_m3u_accounts(token: str) -> List[Dict[str, Any]]:
+    """
+    Fetch M3U/XC accounts from Dispatcharr.
+
+    Handles both:
+    - pure list JSON from /api/m3u/accounts/
+    - or paginated dicts with 'results' / 'data' / 'items'.
+    """
     url = f"{DISPATCHARR_BASE_URL.rstrip('/')}/api/m3u/accounts/"
-    data = api_get_json(url, token)
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        results = data.get("results") or data.get("data") or data.get("items")
+    raw = api_get_json(url, token)
+
+    # If we got the wrapped list format
+    if isinstance(raw, dict) and "__list" in raw:
+        lst = raw["__list"]
+        return lst if isinstance(lst, list) else []
+
+    # If we got a normal dict with results/data/items
+    if isinstance(raw, dict):
+        results = raw.get("results") or raw.get("data") or raw.get("items")
         if isinstance(results, list):
             return results
+
+    # Unexpected shape
+    if isinstance(raw, list):
+        # Shouldn't happen now, but just in case
+        return raw
+
     return []
 
 
@@ -68,7 +112,12 @@ def get_series_for_account(token: str, account_id: int, page_size: int = 20) -> 
         f"{DISPATCHARR_BASE_URL.rstrip('/')}/api/vod/series/"
         f"?m3u_account={account_id}&page=1&page_size={page_size}"
     )
-    return api_get_json(url, token)
+    data = api_get_json(url, token)
+
+    # api_get_json should always return a dict here (paginated list)
+    if not isinstance(data, dict):
+        return {"__status_code": 0, "__text": "Unexpected JSON shape for /api/vod/series/"}
+    return data
 
 
 def get_provider_info(token: str, series_id: int) -> Dict[str, Any]:
@@ -76,7 +125,12 @@ def get_provider_info(token: str, series_id: int) -> Dict[str, Any]:
         f"{DISPATCHARR_BASE_URL.rstrip('/')}/api/vod/series/"
         f"{series_id}/provider-info/?include_episodes=true"
     )
-    return api_get_json(url, token)
+    data = api_get_json(url, token)
+
+    # Expecting a dict
+    if not isinstance(data, dict):
+        return {"__status_code": 0, "__text": "Unexpected JSON shape for provider-info"}
+    return data
 
 
 def get_series_info_xc(server_url: str, xc_user: str, xc_pass: str, series_id: int) -> Dict[str, Any]:
@@ -90,7 +144,10 @@ def get_series_info_xc(server_url: str, xc_user: str, xc_pass: str, series_id: i
     )
     r = requests.get(url, timeout=60)
     try:
-        return r.json()
+        data = r.json()
+        if isinstance(data, dict):
+            return data
+        return {"__status_code": r.status_code, "__data": data}
     except Exception:
         return {"__status_code": r.status_code, "__text": r.text}
 
@@ -108,7 +165,10 @@ def main() -> None:
 
     log("M3U/XC accounts:")
     for acc in accounts:
-        log(f"  - id={acc.get('id')} name={acc.get('name')} server_url={acc.get('server_url')}")
+        log(
+            f"  - id={acc.get('id')} name={acc.get('name')} "
+            f"server_url={acc.get('server_url')}"
+        )
 
     target = None
     for acc in accounts:
@@ -180,15 +240,17 @@ def main() -> None:
     if "episodes" in xc_info:
         eps = xc_info["episodes"]
         # some XC layouts nest episodes under season keys; flatten if needed
-        flat_eps = []
+        flat_eps: List[Dict[str, Any]] = []
         if isinstance(eps, dict):
             for season_key, ep_list in eps.items():
                 if isinstance(ep_list, list):
                     for e in ep_list:
-                        e["_season_key"] = season_key
-                        flat_eps.append(e)
+                        if isinstance(e, dict):
+                            e = dict(e)
+                            e["_season_key"] = season_key
+                            flat_eps.append(e)
         elif isinstance(eps, list):
-            flat_eps = eps
+            flat_eps = [e for e in eps if isinstance(e, dict)]
 
         print(f"XC episodes (flattened) count: {len(flat_eps)}")
         print("First few episodes from XC get_series_info:")
