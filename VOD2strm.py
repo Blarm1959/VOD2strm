@@ -399,59 +399,27 @@ def get_provider_info_cache_path(account_name: str, series_id: int) -> Path:
 
 
 def provider_info_cached(base: str, token: str, account_name: str, series_id: int) -> dict:
-    """
-    Fetch provider-info for a series, using cached JSON if possible.
-    Quiet unless LOG_LEVEL=DEBUG/VERBOSE.
-    """
-
-    # Always define cache_dir and cache_path immediately
-    cache_dir = CACHE_BASE_DIR / safe_account_name(account_name) / "provider-info"
-    cache_path = cache_dir / f"{series_id}.json"
-
-    # Use cached file unless CLEAR_CACHE=true
-    if not CLEAR_CACHE and cache_path.exists():
+    cache_path = get_provider_info_cache_path(account_name, series_id)
+    if cache_path.exists():
         try:
             with open(cache_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            pass
-
-    # Fetch from Dispatcharr API
-    data = api_get(
-        base,
-        token,
-        f"/api/vod/series/{series_id}/provider-info/?include_episodes=true",
-    )
-
-    if data is None:
-        # Silent on missing data except for the HTTP 500 print handled earlier
+        except Exception as e:
+            log(f"Failed to read provider-info cache for series_id={series_id} ({account_name}): {e}")
+    info = api_get_series_provider_info(base, token, series_id)
+    if not info:
         return {}
-
-    # Write cached provider-info JSON
-    if DRY_RUN:
-        # Only log in DEBUG / VERBOSE
-        if LOG_LEVEL in ("DEBUG", "VERBOSE"):
-            log(f"[dry-run] Would write provider-info cache for series_id={series_id} "
-                f"({account_name}) to {cache_path}")
-        return data
-
     try:
-        mkdir(cache_dir)
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(data, f)
-
-        if LOG_LEVEL in ("DEBUG", "VERBOSE"):
-            log(f"Saved provider-info cache for series_id={series_id} "
-                f"({account_name}) to {cache_path}")
-
+        if DRY_RUN:
+            log(f"[dry-run] Would write provider-info cache for series_id={series_id} ({account_name}) to {cache_path}")
+        else:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(info, f)
+            log(f"Saved provider-info cache for series_id={series_id} ({account_name}) to {cache_path}")
     except Exception as e:
-        # ONE-LINE error only
-        log(
-            f"Failed to write provider-info cache for series_id={series_id} "
-            f"({account_name}): {e}"
-        )
-
-    return data
+        log(f"Failed to write provider-info cache for series_id={series_id} ({account_name}): {e}")
+    return info
 
 
 def normalize_provider_info(info: dict) -> dict:
