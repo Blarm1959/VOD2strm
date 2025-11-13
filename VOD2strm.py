@@ -206,17 +206,20 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
     page = 1
     total = None
     seen = 0
+    next_progress_pct = 10  # log at ~10%, 20%, ... similar to movies/series
+
     while True:
         sep = "&" if "?" in path else "?"
         full_path = f"{path}{sep}page={page}&page_size={page_size}"
         data = api_get(base_url, token, full_path)
         if data is None:
             break
+
         if isinstance(data, dict):
             results = data.get("results") or data.get("data") or data.get("items") or []
             if total is None:
                 total = data.get("count") or len(results)
-                log(f"Pagination start for {path}: total={total}")
+                log_progress(f"Pagination start for {path}: total={total}")
         else:
             results = data
             if total is None:
@@ -228,9 +231,13 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
         seen += len(results)
         if total:
             pct = (seen * 100) // total
-            log(f"Pagination {path}: page={page}, {seen}/{total} ({pct}%) items fetched")
+            # First chunk, final chunk, or on/after the next 10% threshold
+            if seen == len(results) or seen >= total or pct >= next_progress_pct:
+                log_progress(f"Pagination {path}: page={page}, {seen}/{total} ({pct}%) items fetched")
+                while next_progress_pct <= pct and next_progress_pct < 100:
+                    next_progress_pct += 10
         else:
-            log(f"Pagination {path}: page={page}, {seen} items fetched (total unknown)")
+            log_progress(f"Pagination {path}: page={page}, {seen} items fetched (total unknown)")
 
         yield results
 
@@ -241,105 +248,8 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
         else:
             if len(results) < page_size:
                 break
+
         page += 1
-
-
-# ------------------------------------------------------------
-# Name cleaning / FS-safe
-# ------------------------------------------------------------
-TAG_PATTERN = re.compile(
-    r"(\b(4K|8K|1080p|720p|HDR10|HDR|H.264|H\.265|HEVC)\b|\[[^\]]+\])",
-    re.IGNORECASE,
-)
-
-
-def strip_tags(title: str) -> str:
-    return TAG_PATTERN.sub("", title)
-
-
-def normalize_title(title: str) -> str:
-    if not title:
-        return ""
-    title = unicodedata.normalize("NFKC", title)
-    title = strip_tags(title)
-    title = re.sub(r"\s+", " ", title).strip(" -._")
-    return title
-
-
-FS_SAFE_PATTERN = re.compile(r'[\\/:*?"<>|]+')
-
-
-def fs_safe(name: str) -> str:
-    name = name.strip()
-    name = FS_SAFE_PATTERN.sub("_", name)
-    name = name.strip(" .")
-    if not name:
-        name = "_"
-    return name
-
-
-def safe_account_name(name: str) -> str:
-    return fs_safe(name)
-
-
-# ------------------------------------------------------------
-# Tiny FS helpers
-# ------------------------------------------------------------
-def mkdir(path: Path) -> None:
-    """Create directory unless dry-run mode is active."""
-    if DRY_RUN:
-        log(f"[dry-run] Would create directory: {path}")
-        return
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def write_text_atomic(path: Path, content: str) -> None:
-    """Safely write text unless dry-run mode is active."""
-    if DRY_RUN:
-        log(f"[dry-run] Would write file: {path}")
-        return
-    mkdir(path.parent)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-    os.replace(tmp, path)
-
-
-def write_strm(path: Path, url: str) -> None:
-    write_text_atomic(path, f"{url}\n")
-
-
-def normalize_host_for_proxy(base: str) -> str:
-    host = (base or "").strip()
-    if not host:
-        return ""
-    host = host.rstrip("/")
-    if host.startswith("http://"):
-        host = host[len("http://"):]
-    elif host.startswith("https://"):
-        host = host[len("https://"):]
-    host = "http://" + host
-    return host
-
-
-# ------------------------------------------------------------
-# Dispatcharr API: XC Accounts
-# ------------------------------------------------------------
-def get_xc_accounts(base: str, token: str) -> list[dict]:
-    """
-    Return the list of M3U/XC accounts from Dispatcharr.
-
-    Swagger path:
-      /api/m3u/accounts/
-    """
-    data = api_get(base, token, "/api/m3u/accounts/")
-    if not data:
-        return []
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict):
-        return data.get("results") or data.get("data") or data.get("items") or []
-    return []
 
 
 # ------------------------------------------------------------
