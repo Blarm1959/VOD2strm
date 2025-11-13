@@ -221,14 +221,41 @@ def main() -> None:
     print("Top-level keys:", top_keys)
 
     episodes = info.get("episodes")
+
+    # Try to normalise episodes from provider-info
+    flat_eps = []
+
     if isinstance(episodes, list):
-        print(f"episodes length: {len(episodes)}")
+        flat_eps = [e for e in episodes if isinstance(e, dict)]
+    elif isinstance(episodes, dict):
+        # Some providers use a {season: [episodes...]} shape
+        for season_key, ep_list in episodes.items():
+            if isinstance(ep_list, list):
+                for e in ep_list:
+                    if isinstance(e, dict):
+                        e = dict(e)
+                        e["_season_key"] = season_key
+                        flat_eps.append(e)
+
+    print("\n--- Dispatcharr provider-info response (truncated) ---")
+    print(f"HTTP status: {status}")
+    top_keys = [k for k in info.keys() if not k.startswith(\"__\")]
+    print("Top-level keys:", top_keys)
+
+    if flat_eps:
+        print(f"episodes length: {len(flat_eps)}")
         print("First few episodes from provider-info:")
-        for ep in episodes[:5]:
+        for ep in flat_eps[:5]:
             print(json.dumps(ep, indent=2, ensure_ascii=False))
+        # ✅ We have usable episodes from Dispatcharr, so STOP here.
         return
-    elif status != 200:
+
+    # At this point, provider-info didn't give us usable episodes.
+    # Only now consider fallback to XC API.
+    if status != 200:
         print("No usable episodes from provider-info (non-200 status).")
+    else:
+        print("No usable episodes from provider-info (200 status but empty/malformed episodes).")
 
     # 4) Fallback to XC API, if we have server_url + creds
     if not (server_url and xc_user and xc_pass):
@@ -237,10 +264,11 @@ def main() -> None:
 
     print("\n--- Fallback: XC get_series_info ---")
     xc_info = get_series_info_xc(server_url, xc_user, xc_pass, sid)
+
     if "episodes" in xc_info:
         eps = xc_info["episodes"]
         # some XC layouts nest episodes under season keys; flatten if needed
-        flat_eps: List[Dict[str, Any]] = []
+        flat_eps = []
         if isinstance(eps, dict):
             for season_key, ep_list in eps.items():
                 if isinstance(ep_list, list):
@@ -257,8 +285,11 @@ def main() -> None:
         for ep in flat_eps[:5]:
             print(json.dumps(ep, indent=2, ensure_ascii=False))
     else:
-        print("No 'episodes' key in XC get_series_info response.")
-        print(json.dumps(xc_info, indent=2, ensure_ascii=False))
+        status_xc = xc_info.get("__status_code")
+        print(f"No 'episodes' key in XC get_series_info response (status={status_xc}).")
+        if "__text" in xc_info:
+            # Print just a short prefix of the HTML to avoid spam
+            print(xc_info["__text"][:400] + "...")
 
 
 if __name__ == "__main__":
