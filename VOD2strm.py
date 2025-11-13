@@ -399,26 +399,48 @@ def get_provider_info_cache_path(account_name: str, series_id: int) -> Path:
 
 
 def provider_info_cached(base: str, token: str, account_name: str, series_id: int) -> dict:
+    """
+    Fetch provider-info for a series, using cached JSON if possible.
+    Provider-info cache writes are only logged at DEBUG/VERBOSE to avoid noisy output at INFO.
+    """
     cache_path = get_provider_info_cache_path(account_name, series_id)
+
+    # Try cached copy first
     if cache_path.exists():
         try:
             with open(cache_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             log(f"Failed to read provider-info cache for series_id={series_id} ({account_name}): {e}")
+
+    # Fetch fresh provider-info from Dispatcharr
     info = api_get_series_provider_info(base, token, series_id)
     if not info:
         return {}
+
+    # Write/update cache
     try:
         if DRY_RUN:
-            log(f"[dry-run] Would write provider-info cache for series_id={series_id} ({account_name}) to {cache_path}")
+            # Only log provider-info cache actions at higher verbosity.
+            if LOG_LEVEL in ("DEBUG", "VERBOSE"):
+                log(
+                    f"[dry-run] Would write provider-info cache for series_id={series_id} "
+                    f"({account_name}) to {cache_path}"
+                )
         else:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "w", encoding="utf-8") as f:
                 json.dump(info, f)
-            log(f"Saved provider-info cache for series_id={series_id} ({account_name}) to {cache_path}")
+            # Only log saved-cache at DEBUG/VERBOSE.
+            if LOG_LEVEL in ("DEBUG", "VERBOSE"):
+                log(
+                    f"Saved provider-info cache for series_id={series_id} "
+                    f"({account_name}) to {cache_path}"
+                )
     except Exception as e:
+        # Real errors writing cache should still be visible.
         log(f"Failed to write provider-info cache for series_id={series_id} ({account_name}): {e}")
+
     return info
 
 
