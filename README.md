@@ -1,98 +1,136 @@
-# Dispatcharr → Emby VOD Export
+# README.md — VOD2strm (Dispatcharr → Emby STRM Exporter)
 
-This project automates the export of VOD Movies and Series from **Dispatcharr** into **Emby** using lightweight `.strm` files.  
-It allows Emby to present and stream Dispatcharr VOD content as if it were part of the local media library — keeping both systems synchronized automatically each night.
+## 📌 Overview
+**VOD2strm** is a standalone Python tool that exports Movies and TV Series from **Dispatcharr** into a filesystem structure compatible with **Emby**, **Jellyfin**, and **Plex** using `.strm` files, optional `.nfo` metadata, artwork (when available), and a persistent cache.
 
----
-
-## 📜 Overview
-
-The **`vod_export.py`** script connects to the **Dispatcharr PostgreSQL** database and retrieves all active VOD Movies and Series for each configured XC account.  
-Using each account’s server URL, username, and password, it constructs playable stream URLs and writes them into `.strm` files organized in an Emby-compatible folder layout.
-
-Configuration is stored in **`vod_export_vars.sh`**, which defines:
-- **PostgreSQL settings:** `PG_HOST`, `PG_PORT`, `PG_DB`, `PG_USER`, `PG_PASSWORD`
-- **XC account filters:** `XC_NAMES` (comma-separated, supports SQL wildcards like `%`)
-- **Destination folders:** `VOD_MOVIES_DIR`, `VOD_SERIES_DIR`
-- **Behavior flags:**  
-  - `VOD_DELETE_OLD=true` → remove stale `.strm` files during incremental runs  
-  - `VOD_CLEAR_CACHE=true` → perform a full rebuild (can also be overridden per run)
-- **Logging:** `VOD_LOG_FILE` → full progress and summary output
-
-For each active XC account, the exporter creates a structure like:
-
-```
-/mnt/Share-Media/Dispatcharr/<XC_NAME>/VOD/Movies/<Category>/<Title> (Year)/<Title> (Year).strm
-```
-
-and similarly for Series.  
-Titles are cleaned of provider junk (e.g., `[EN]`, `1080p`, `4K`) and Unicode-normalized for proper Emby matching and artwork retrieval.
+It supports:
+- Multiple M3U/XC accounts
+- API‑based export (no playlist parsing)
+- Category/genre folder organisation
+- Clean titles (tag stripping, FS‑safe, normalisation)
+- Fast incremental updates using caches
+- **Automatic XC fallback for TV episodes** (temporary workaround — see below)
 
 ---
 
-## 🔁 Resetting Everything
+## ⚠️ TEMPORARY EPISODE FALLBACK (IMPORTANT)
 
-To perform a full clean rebuild — clearing cached data and deleting all existing VOD Movies/Series folders before regeneration — use the helper script **`vod_export_reset.sh`**:
+Dispatcharr has a current bug where:
 
-```bash
-cd /opt/VOD2strm
-./vod_export_reset.sh
+### ❌ `/api/vod/series/<id>/provider-info/?include_episodes=true`  
+fails for many series with:
+
+```
+500 Internal Server Error
 ```
 
-This temporarily sets `VOD_CLEAR_CACHE=true`, removes all cached XC data and `.strm` folders, and then reruns the export from scratch.  
-Your regular nightly cron job continues to use the default incremental behavior.
+Because of this, Dispatcharr does **not** return episode lists for most TV series.
+
+### ✔️ **Temporary XC API Fallback**
+
+VOD2strm will now:
+
+1. Detect a 500 error from the provider-info API  
+2. Retrieve XC credentials for that Dispatcharr account  
+3. Call the XC API:  
+   ```
+   /player_api.php?username=<USER>&password=<PASS>&action=get_series_info&series_id=<ID>
+   ```
+4. Parse and rebuild episode lists (season number, episode number, title, stream URL)  
+5. Save a merged provider-info JSON into cache  
+6. Continue export as normal  
+
+### 📝 This fallback is temporary  
+Once Dispatcharr fixes the provider-info bug, the fallback can be disabled or removed cleanly.
 
 ---
 
-## 🕒 Automated Scheduling and Proxmox Integration
-
-The nightly automation is coordinated across Dispatcharr, Emby, and Proxmox to ensure clean and consistent updates of VOD content.
-
-- **Dispatcharr LXC** — A cron job runs every night at **02:00**:
-  ```bash
-  0 2 * * * /usr/bin/env bash -lc 'cd /opt/VOD2strm && ./vod_export.py >> /opt/VOD2strm/cron.log 2>&1'
-  ```
-  This regenerates or incrementally updates all `.strm` files using current Dispatcharr data.
-
-- **Emby LXC** — A second cron job runs at **04:00** to refresh the libraries:
-  ```bash
-  0 4 * * * /usr/bin/curl -sS -X POST "http://localhost:8096/emby/Library/Refresh?api_key=YOUR_API_KEY" >> /var/log/emby_rescan.log 2>&1
-  ```
-  The **API key** is generated from the Emby web dashboard under  
-  **Dashboard → Advanced → API Keys → + New API Key**,  
-  then inserted into the cron command so Emby automatically rescans its libraries after Dispatcharr’s export completes.
-
-- **Proxmox Host (pve-01)** — To prevent Emby from reacting to thousands of file changes during the export window, two cron entries on the host stop Emby at **01:45** and start it again at **03:15**:
-  ```bash
-  45 1 * * * /usr/sbin/pct stop 123
-  15 3 * * * /usr/sbin/pct start 123
-  ```
-  This ensures Emby remains idle while Dispatcharr regenerates `.strm` files and restarts cleanly before the 04:00 rescan.
-
-Together, these scheduled tasks maintain a fully synchronized, automated Dispatcharr → Emby VOD workflow with no manual intervention required.
-
----
-
-## 🧩 Repository Structure
+## 📁 Output Structure
 
 ```
-DispatcharrEmby/
-├── vod_export.py             # Main exporter script
-├── vod_export_vars.sh        # Configuration: DB, paths, flags
-├── vod_export_reset.sh       # One-shot full reset helper
-├── cron.log                  # (optional) nightly cron output
-└── README.md                 # This file
+/mnt/Share-VOD/<Account>/
+│
+├── Movies/
+│   └── <Category>/<Movie Name>/
+│       ├── <name>.strm
+│       └── movie.nfo
+│
+└── Series/
+    └── <Genre>/<Series Name>/
+        ├── tvshow.nfo
+        ├── poster.jpg (if available)
+        ├── fanart.jpg (if available)
+        └── Season XX/
+            └── SxxEyy - <title>.strm
 ```
 
 ---
 
-## 🧠 Notes
+## 🔧 Configuration (VOD2strm_vars.sh)
 
-- The scripts are designed for use inside a Debian-based Dispatcharr LXC on **Proxmox VE**.
-- The Emby and Dispatcharr containers share `/mnt/Share-Media`, typically mounted from NAS storage.
-- Ensure the `PG_*` credentials and XC account filters in `vod_export_vars.sh` match your Dispatcharr configuration.
-- Always run `chmod +x` on the scripts after cloning.
+| Variable | Description |
+|---------|-------------|
+| `DISPATCHARR_URL` | Base URL for Dispatcharr API |
+| `API_TOKEN` | API token |
+| `OUTPUT_ROOT` | Root of STRM output |
+| `CACHE_DIR` | Cache directory |
+| `LOG_FILE` | Optional logfile |
+| `DRY_RUN` | Do not write files |
+| `CLEAR_CACHE` | Clear cache before run |
+| `ACCOUNT_FILTERS` | Only run against selected accounts |
+| `LOG_LEVEL` | `INFO` / `WARN` / `ERROR` |
 
 ---
 
-© 2025 [Blarm1959](https://github.com/Blarm1959)
+## ▶️ Running
+
+Normal export:
+```
+./VOD2strm.py
+```
+
+Verbose:
+```
+LOG_LEVEL=INFO ./VOD2strm.py
+```
+
+Dry-run:
+```
+DRY_RUN=true LOG_LEVEL=INFO ./VOD2strm.py
+```
+
+Clear cache:
+```
+CLEAR_CACHE=true ./VOD2strm.py
+```
+
+---
+
+## ⚡ Performance
+
+Strong 8K typical time:
+- Movies fetch: ~180 seconds
+- Series fetch: ~45 seconds
+
+Export:
+- ~17,500 movies
+- ~4,200 series
+- ~75,000+ episodes (via XC fallback)
+
+---
+
+## 🧩 Known Issues
+
+| Issue | Status |
+|-------|--------|
+| Dispatcharr `/provider-info` 500 | Mitigated via XC fallback |
+| XC throttling | Auto retry |
+| Missing artwork | Planned |
+| Minimal NFO | Expandable |
+
+---
+
+## 📜 License
+
+Private homelab utility — no warranty.
+
