@@ -70,6 +70,9 @@ if dry_run_env is not None:
 else:
     DRY_RUN = VARS.get("VOD_DRY_RUN", "false").lower() == "true"
 
+# Log level / verbosity controller (for progress percentage lines)
+LOG_LEVEL = (os.getenv("LOG_LEVEL") or VARS.get("LOG_LEVEL", "INFO")).upper()
+
 # NFO / TMDB
 ENABLE_NFO = VARS.get("ENABLE_NFO", "false").lower() == "true"
 OVERWRITE_NFO = VARS.get("VOD_OVERWRITE_NFO", "false").lower() == "true"
@@ -94,6 +97,22 @@ def log(msg: str) -> None:
     Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def log_progress(msg: str) -> None:
+    """
+    Log percentage-style progress messages depending on LOG_LEVEL.
+
+    LOG_LEVEL controls these:
+      - DEBUG / VERBOSE / INFO -> show progress lines
+      - WARN / ERROR / QUIET   -> hide progress lines
+    """
+    level = LOG_LEVEL
+    if level in ("DEBUG", "VERBOSE", "INFO"):
+        log(msg)
+    else:
+        # Quiet/minimal modes: skip noisy percentage logs
+        return
 
 
 # ------------------------------------------------------------
@@ -1017,8 +1036,13 @@ def export_movies_for_account(base: str, token: str, account: dict):
 
         if total_movies:
             pct = (processed * 100) // total_movies
-            if processed == 1 or processed == total_movies or pct >= next_progress_pct:
-                log(
+            # Show at 10% steps plus first and last
+            if (
+                processed == 1
+                or processed == total_movies
+                or pct >= next_progress_pct
+            ):
+                log_progress(
                     f"Movies export '{account_name}' (API) progress: {pct}% "
                     f"({processed}/{total_movies} movies processed, {written} .strm written)"
                 )
@@ -1083,25 +1107,28 @@ def export_series_for_account(base: str, token: str, account: dict):
 
     total_series = len(series_list) or None
     processed_series = 0
-    next_progress_pct = 5  # finer-grained than movies
+    next_progress_pct = 10
 
     for s in series_list:
         processed_series += 1
 
-        # --- NEW: Provider-info + series export progress logging ---
+        # 10% step progress logging for series provider-info + STRM
         if total_series:
             pct = (processed_series * 100) // total_series
-            if processed_series == 1 or processed_series == total_series or pct >= next_progress_pct:
-                log(
+            if (
+                processed_series == 1
+                or processed_series == total_series
+                or pct >= next_progress_pct
+            ):
+                log_progress(
                     f"Series export '{account_name}' progress: {pct}% "
-                    f"({processed_series}/{total_series} series provider-info & STRM processed, "
+                    f"({processed_series}/{total_series} series processed, "
                     f"{added_eps} episodes written so far)"
                 )
                 while next_progress_pct <= pct and next_progress_pct < 100:
-                    next_progress_pct += 5
-        # -----------------------------------------------------------
+                    next_progress_pct += 10
 
-        # Write out STRMs + NFO + artwork for this series
+        # Write STRMs + NFO + artwork for this series
         export_series(base, token, account_name, series_dir, proxy_host, account_id, s)
 
         # Now recompute expected STRM paths for cleanup
