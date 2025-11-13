@@ -193,6 +193,33 @@ def api_get(base_url: str, token: str, path: str, params: dict | None = None):
         return None
 
 
+def get_xc_accounts(base_url: str, token: str):
+    """
+    Fetch all M3U/XC accounts from Dispatcharr.
+
+    Returns a list of account dicts as returned by /api/m3u/accounts/.
+    """
+    data = api_get(base_url, token, "/api/m3u/accounts/")
+    if data is None:
+        return []
+
+    # Depending on Dispatcharr version, this may be:
+    # - a list of accounts
+    # - a dict with "results" or "data" or "items"
+    if isinstance(data, dict):
+        results = data.get("results") or data.get("data") or data.get("items") or data
+    else:
+        results = data
+
+    # Normalise to a list
+    if isinstance(results, dict):
+        results = [results]
+    if not isinstance(results, list):
+        return []
+
+    return results
+
+
 def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
     """
     Generic pagination helper for Dispatcharr list endpoints.
