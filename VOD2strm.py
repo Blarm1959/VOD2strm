@@ -43,7 +43,7 @@ MOVIES_DIR_TEMPLATE = VARS.get("MOVIES_DIR", "/mnt/Share-VOD/{XC_NAME}/Movies")
 SERIES_DIR_TEMPLATE = VARS.get("SERIES_DIR", "/mnt/Share-VOD/{XC_NAME}/Series")
 
 # Logging + cleanup
-LOG_FILE = VARS.get("LOG_FILE", str(SCRIPT_DIR / "VOD2strm.log"))
+LOG_FILE = VARS.get("LOG_FILE") or str(SCRIPT_DIR / "VOD2strm.log")
 DELETE_OLD = VARS.get("DELETE_OLD", "true").lower() == "true"
 
 # Dispatcharr API
@@ -83,7 +83,7 @@ NFO_LANG = VARS.get("NFO_LANG", "en-US")
 TMDB_THROTTLE_SEC = float(VARS.get("TMDB_THROTTLE_SEC", "0.3"))
 
 # Cache base
-CACHE_BASE_DIR = Path(VARS.get("CACHE_DIR", str(SCRIPT_DIR / "cache")))
+CACHE_BASE_DIR = Path(VARS.get("CACHE_DIR") or str(SCRIPT_DIR / "cache"))
 
 # User-Agent
 HTTP_USER_AGENT = VARS.get("HTTP_USER_AGENT", "VOD2strm/1.0")
