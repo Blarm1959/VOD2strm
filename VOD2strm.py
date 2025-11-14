@@ -89,8 +89,15 @@ CACHE_BASE_DIR = Path(VARS.get("CACHE_DIR") or str(SCRIPT_DIR / "cache"))
 HTTP_USER_AGENT = VARS.get("HTTP_USER_AGENT", "VOD2strm/1.0")
 
 # Limits for testing (optional)
-LIMIT_MOVIES = os.getenv("LIMIT_MOVIES", "").strip()
-LIMIT_SERIES = os.getenv("LIMIT_SERIES", "").strip()
+# Limits for testing (optional) – env overrides file
+limit_movies_raw = os.getenv("LIMIT_MOVIES")
+if limit_movies_raw is None:
+    limit_movies_raw = VARS.get("LIMIT_MOVIES", "")
+LIMIT_MOVIES = (limit_movies_raw or "").strip()
+limit_series_raw = os.getenv("LIMIT_SERIES")
+if limit_series_raw is None:
+    limit_series_raw = VARS.get("LIMIT_SERIES", "")
+LIMIT_SERIES = (limit_series_raw or "").strip()
 try:
     LIMIT_MOVIES = int(LIMIT_MOVIES) if LIMIT_MOVIES else None
 except ValueError:
