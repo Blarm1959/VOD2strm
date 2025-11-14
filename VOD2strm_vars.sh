@@ -101,6 +101,18 @@ DRY_RUN="false"
 #   WARN / ERROR / QUIET -> hide percentage progress lines, keep key events
 LOG_LEVEL="INFO"
 
+########################################
+# Limits for testing
+########################################
+
+# Limits for testing (optional)
+export LIMIT_MOVIES="20"
+export LIMIT_SERIES="20"
+
+########################################
+# Fallback for episode metadata
+########################################
+
 # TEMPORARY WORKAROUND FOR EPISODE METADATA FETCHING
 # When enabled, VOD2strm will first try to get episode metadata from the
 # Dispatcharr /api/vod/series/<id>/provider-info/ endpoint (which is faster).

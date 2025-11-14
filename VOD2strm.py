@@ -88,6 +88,18 @@ CACHE_BASE_DIR = Path(VARS.get("CACHE_DIR") or str(SCRIPT_DIR / "cache"))
 # User-Agent
 HTTP_USER_AGENT = VARS.get("HTTP_USER_AGENT", "VOD2strm/1.0")
 
+# Limits for testing (optional)
+LIMIT_MOVIES = os.getenv("LIMIT_MOVIES", "").strip()
+LIMIT_SERIES = os.getenv("LIMIT_SERIES", "").strip()
+try:
+    LIMIT_MOVIES = int(LIMIT_MOVIES) if LIMIT_MOVIES else None
+except ValueError:
+    LIMIT_MOVIES = None
+try:
+    LIMIT_SERIES = int(LIMIT_SERIES) if LIMIT_SERIES else None
+except ValueError:
+    LIMIT_SERIES = None
+
 # Temporary workaround: enable/disable XC fallback for episodes
 ENABLE_XC_EPISODE_FALLBACK = (os.getenv("ENABLE_XC_EPISODE_FALLBACK") or VARS.get("ENABLE_XC_EPISODE_FALLBACK", "true")).strip().lower() in ("1", "true", "yes", "on")
 
