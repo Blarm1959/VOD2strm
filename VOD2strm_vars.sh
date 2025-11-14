@@ -100,3 +100,10 @@ DRY_RUN="false"
 #   DEBUG / VERBOSE  -> same as INFO (reserved for extra detail later)
 #   WARN / ERROR / QUIET -> hide percentage progress lines, keep key events
 LOG_LEVEL="INFO"
+
+# TEMPORARY WORKAROUND FOR EPISODE METADATA FETCHING
+# When enabled, VOD2strm will first try to get episode metadata from the
+# Dispatcharr /api/vod/series/<id>/provider-info/ endpoint (which is faster).
+# If that endpoint does not return episode data, it will fall back to using
+# the XC get_series_info endpoint to get episode metadata.  
+ENABLE_XC_EPISODE_FALLBACK="true"

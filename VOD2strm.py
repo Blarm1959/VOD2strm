@@ -88,6 +88,8 @@ CACHE_BASE_DIR = Path(VARS.get("CACHE_DIR") or str(SCRIPT_DIR / "cache"))
 # User-Agent
 HTTP_USER_AGENT = VARS.get("HTTP_USER_AGENT", "VOD2strm/1.0")
 
+# Temporary workaround: enable/disable XC fallback for episodes
+ENABLE_XC_EPISODE_FALLBACK = (os.getenv("ENABLE_XC_EPISODE_FALLBACK") or VARS.get("ENABLE_XC_EPISODE_FALLBACK", "true")).strip().lower() in ("1", "true", "yes", "on")
 
 # ------------------------------------------------------------
 # Logging
@@ -759,22 +761,34 @@ def get_normalized_provider_info_with_fallback(
     series: dict,
 ) -> dict:
     """
-    1) Try Dispatcharr provider-info (cached) and normalize.
-    2) If no episodes found, fallback to XC get_series_info using the
-       account's server_url / username / password.
+    TEMPORARY WORKAROUND:
+    - Primary: Dispatcharr /api/vod/series/<id>/provider-info/?include_episodes=true
+    - Fallback: XC get_series_info (only when provider-info has no episodes)
+
+    The XC path is expected to be removed once the upstream Dispatcharr
+    episode handling bug is fixed in the Dispatcharr API.
     """
     account_id = account.get("id")
     account_name = account.get("name") or f"Account-{account_id}"
     series_id = series.get("id")
 
-    # Step 1: Dispatcharr provider-info (+ cache) as today
+    # Step 1: Dispatcharr provider-info (cached + normalised)
     provider_raw = provider_info_cached(base, token, account_name, series_id)
     provider_norm = normalize_provider_info(provider_raw)
+
     seasons = provider_norm.get("seasons") or []
     has_eps = any((s.get("episodes") for s in seasons))
 
     if has_eps:
         # Happy path – Dispatcharr already has episodes
+        return provider_norm
+
+    # If fallback is globally disabled, stop here
+    if not ENABLE_XC_EPISODE_FALLBACK:
+        log_debug(
+            f"XC episode fallback disabled – keeping empty provider-info "
+            f"for series_id={series_id} ({account_name})."
+        )
         return provider_norm
 
     # Step 2: XC fallback if we have credentials
@@ -803,7 +817,9 @@ def get_normalized_provider_info_with_fallback(
                 f"returned status={status} with no 'episodes' key."
             )
         else:
-            log(f"XC get_series_info for series_id={series_id} returned no 'episodes' key.")
+            log(
+                f"XC get_series_info for series_id={series_id} returned no 'episodes' key."
+            )
         return provider_norm
 
     provider_from_xc = build_provider_info_from_xc(xc_info)
