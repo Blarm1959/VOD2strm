@@ -216,7 +216,7 @@ def api_get(base_url: str, token: str, path: str, params: dict | None = None):
         return None
 
 
-def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
+def api_paginate(base_url: str, token: str, path: str, page_size: int = 250, max_items=None):
     """
     Generic pagination helper for Dispatcharr list endpoints.
     Yields pages (list of items). Also logs progress if `count` is present.
@@ -225,6 +225,8 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
       - `path` may already include query parameters, e.g.
         "/api/vod/movies/?m3u_account=2"
       - We append page/page_size using "?" or "&" appropriately.
+      - If max_items is not None, we will stop after yielding at most
+        max_items items across all pages (truncating the final page if needed).
     """
     page = 1
     total = None
@@ -232,6 +234,10 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
     next_progress_pct = 10  # for DEBUG/VERBOSE pagination logs
 
     while True:
+        # If we already hit the limit, stop before calling the API again
+        if max_items is not None and seen >= max_items:
+            break
+
         sep = "&" if "?" in path else "?"
         full_path = f"{path}{sep}page={page}&page_size={page_size}"
 
@@ -243,6 +249,9 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
             results = data.get("results") or data.get("data") or data.get("items") or []
             if total is None:
                 total = data.get("count") or len(results)
+                # If we have a max_items cap, clamp total for logging
+                if max_items is not None and total:
+                    total = min(total, max_items)
                 # Only show pagination start at higher verbosity
                 if LOG_LEVEL in ("DEBUG", "VERBOSE"):
                     log_progress(f"Pagination start for {path}: total={total}")
@@ -254,6 +263,15 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
         if not results:
             break
 
+        # Apply max_items cap to this page
+        if max_items is not None:
+            remaining = max_items - seen
+            if remaining <= 0:
+                break
+            if len(results) > remaining:
+                results = results[:remaining]
+
+        # After any truncation, update seen count
         seen += len(results)
 
         if total:
@@ -262,15 +280,28 @@ def api_paginate(base_url: str, token: str, path: str, page_size: int = 250):
             if LOG_LEVEL in ("DEBUG", "VERBOSE"):
                 # First chunk, final chunk, or on/after the next 10% threshold
                 if seen == len(results) or seen >= total or pct >= next_progress_pct:
-                    log_progress(f"Pagination {path}: page={page}, {seen}/{total} ({pct}%) items fetched")
+                    log_progress(
+                        f"Pagination {path}: page={page}, "
+                        f"{seen}/{total} ({pct}%) items fetched"
+                    )
                     while next_progress_pct <= pct and next_progress_pct < 100:
                         next_progress_pct += 10
         else:
             if LOG_LEVEL in ("DEBUG", "VERBOSE"):
-                log_progress(f"Pagination {path}: page={page}, {seen} items fetched (total unknown)")
+                log_progress(
+                    f"Pagination {path}: page={page}, "
+                    f"{seen} items fetched (total unknown)"
+                )
 
-        yield results
+        # Yield the (possibly truncated) page
+        if results:
+            yield results
 
+        # If we hit the cap exactly, stop here
+        if max_items is not None and seen >= max_items:
+            break
+
+        # Check for next page
         if isinstance(data, dict):
             next_url = data.get("next")
             if not next_url:
@@ -385,7 +416,13 @@ def get_xc_accounts(base: str, token: str) -> list[dict]:
 # ------------------------------------------------------------
 def get_movies_for_account(base: str, token: str, account_id: int, page_size: int = 250):
     path = f"/api/vod/movies/?m3u_account={account_id}"
-    for page in api_paginate(base, token, path, page_size=page_size):
+    for page in api_paginate(
+        base,
+        token,
+        path,
+        page_size=page_size,
+        max_items=LIMIT_MOVIES,
+    ):
         for m in page:
             yield m
 
@@ -395,7 +432,13 @@ def get_movies_for_account(base: str, token: str, account_id: int, page_size: in
 # ------------------------------------------------------------
 def get_series_for_account(base: str, token: str, account_id: int, page_size: int = 250):
     path = f"/api/vod/series/?m3u_account={account_id}"
-    for page in api_paginate(base, token, path, page_size=page_size):
+    for page in api_paginate(
+        base,
+        token,
+        path,
+        page_size=page_size,
+        max_items=LIMIT_SERIES,
+    ):
         for s in page:
             yield s
 
@@ -1407,6 +1450,13 @@ def export_movies_for_account(base: str, token: str, account: dict):
     else:
         log(f"Using cached movies for '{account_name}': {len(movies)} movies")
 
+    # Show LIMIT_MOVIES (if set) for faster testing
+    if LIMIT_MOVIES is not None:
+        log(
+            f"LIMIT_MOVIES={LIMIT_MOVIES}: fetched {len(movies)} movies for "
+            f"'{account_name}' (API-level cap applied)."
+        )
+
     added = 0
     updated = 0
     written = 0
@@ -1495,6 +1545,13 @@ def export_series_for_account(base: str, token: str, account: dict):
         save_series_cache(account_name, series_list)
     else:
         log(f"Using cached series for '{account_name}': {len(series_list)} series")
+
+    # Show LIMIT_SERIES (if set) for faster testing
+    if LIMIT_SERIES is not None:
+        log(
+            f"LIMIT_SERIES={LIMIT_SERIES}: fetched {len(series_list)} series for "
+            f"'{account_name}' (API-level cap applied)."
+        )
 
     added_eps = 0
     updated_eps = 0
