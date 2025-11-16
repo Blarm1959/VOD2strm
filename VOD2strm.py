@@ -17,6 +17,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 VARS_FILE = str(SCRIPT_DIR / "VOD2strm_vars.sh")
 
+# Global current Dispatcharr token (used for auto re-auth on 401)
+_CURRENT_TOKEN: str | None = None
+
 # ------------------------------
 # Helpers: load vars from .sh
 # ------------------------------
@@ -196,19 +199,50 @@ def api_login(base_url: str, username: str, password: str) -> str:
 
 
 def api_get(base_url: str, token: str, path: str, params: dict | None = None):
-    url = f"{base_url.rstrip('/')}{path}"
-    resp = requests.get(
-        url,
-        headers=request_headers(token),
-        params=params or {},
-        timeout=60,
-    )
+    """
+    Perform a GET against the Dispatcharr API.
+
+    - Uses the provided token, but prefers the global _CURRENT_TOKEN if set.
+    - On 401, attempts a single re-login using DISPATCHARR_API_USER/PASS,
+      updates _CURRENT_TOKEN, and retries once.
+    """
+    global _CURRENT_TOKEN
+
+    def do_request(t: str | None):
+        url = f"{base_url.rstrip('/')}{path}"
+        resp = requests.get(
+            url,
+            headers=request_headers(t),
+            params=params or {},
+            timeout=60,
+        )
+        return url, resp
+
+    # Prefer the global current token if available
+    use_token = _CURRENT_TOKEN or token
+    url, resp = do_request(use_token)
+
+    # Handle 401: try to re-login once, then retry
     if resp.status_code == 401:
-        log("ERROR: 401 Unauthorized from Dispatcharr API – check credentials.")
-        return None
+        log("WARNING: 401 Unauthorized from Dispatcharr API – attempting re-login once.")
+        try:
+            new_token = api_login(DISPATCHARR_BASE_URL, DISPATCHARR_API_USER, DISPATCHARR_API_PASS)
+        except Exception as e:
+            log(f"ERROR: re-login failed after 401: {e}")
+            return None
+
+        _CURRENT_TOKEN = new_token
+        url, resp = do_request(new_token)
+
+        if resp.status_code == 401:
+            # Still unauthorized after re-login
+            log("ERROR: 401 Unauthorized from Dispatcharr API even after re-login – check credentials.")
+            return None
+
     # Only log successful API GETs at higher verbosity; always log errors separately below.
     if LOG_LEVEL in ("DEBUG", "VERBOSE"):
         log(f"API GET {url} -> {resp.status_code}")
+
     if not resp.ok:
         first_line = (resp.text or "").splitlines()[0][:200]
         log(f"HTTP {resp.status_code} from {url} – {first_line}")
@@ -218,9 +252,8 @@ def api_get(base_url: str, token: str, path: str, params: dict | None = None):
     try:
         return resp.json()
     except ValueError:
-        first_line = (resp.text or "").splitlines()[0][:200]
-        log(f"ERROR: non-JSON response from {url} – {first_line}")
-        return None
+        # Not JSON, return raw text
+        return resp.text
 
 
 def api_paginate(base_url: str, token: str, path: str, page_size: int = 250, max_items=None):
@@ -1840,7 +1873,9 @@ if __name__ == "__main__":
                     shutil.rmtree(CACHE_BASE_DIR, ignore_errors=True)
                     log(f"Cleared cache dir: {CACHE_BASE_DIR}")
 
+        global _CURRENT_TOKEN
         token = api_login(DISPATCHARR_BASE_URL, DISPATCHARR_API_USER, DISPATCHARR_API_PASS)
+        _CURRENT_TOKEN = token
         log("Authenticated with Dispatcharr API.")
 
         accounts = get_xc_accounts(DISPATCHARR_BASE_URL, token)
