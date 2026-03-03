@@ -1,8 +1,8 @@
 
-Request URL http://192.168.1.129:9191/api/vod/series/2154/provider-info/?include_episodes=true 
+Request URL http://10.83.54.129:9191/api/vod/series/2154/provider-info/?include_episodes=true 
 Request Method GET 
 Status Code 200 OK 
-Remote Address 192.168.1.129:9191 
+Remote Address 10.83.54.129:9191 
 Referrer Policy same-origin
 
 include_episodes=true
@@ -269,10 +269,10 @@ include_episodes=true
     }
 }
 
-Request URL http://192.168.1.129:9191/api/vod/series/2154/providers/ 
+Request URL http://10.83.54.129:9191/api/vod/series/2154/providers/ 
 Request Method GET 
 Status Code 200 OK 
-Remote Address 192.168.1.129:9191 
+Remote Address 10.83.54.129:9191 
 Referrer Policy same-origin
 
 [
